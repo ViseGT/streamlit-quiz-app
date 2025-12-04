@@ -53,7 +53,7 @@ def load_files(uploaded_files):
     st.session_state.all_questions = all_qs
     st.session_state.uploaded_file_names = current_file_names
     
-    # --- 新增邏輯：計算單選和多選數量並顯示 ---
+    # 計算並顯示單選和多選數量
     single_count = sum(1 for q in all_qs if q.get('type') == 'single')
     multi_count = sum(1 for q in all_qs if q.get('type') == 'multi')
     total_count = len(all_qs)
@@ -64,7 +64,6 @@ def load_files(uploaded_files):
         f"- 多選題 (Multi-Choice): **{multi_count}** 題\n\n"
         f"(來自: {', '.join(current_file_names)})"
     )
-    # --- 邏輯結束 ---
 
 def start_quiz(num_single, num_multi):
     """開始測驗，處理抽題和選項亂序邏輯"""
@@ -128,20 +127,14 @@ def save_current_answer():
     """
     q_index = st.session_state.current_index
     q = st.session_state.questions[q_index]
-    component_key = f'q_answer_{q_index}'
-
-    current_answer = st.session_state.get(component_key)
     
     selected_indices = []
     
-    if current_answer is None or (isinstance(current_answer, list) and not current_answer):
-        # 無選擇答案 (Radio None, Multiselect [])
-        st.session_state.answers[q_index] = selected_indices # 存儲空列表
-        return
-        
     if q['type'] == 'single':
-        # 單選：Streamlit Radio Button 回傳單個選項標籤 (e.g., '(1) Option A')
-        if isinstance(current_answer, str):
+        component_key = f'q_answer_{q_index}'
+        current_answer = st.session_state.get(component_key)
+        
+        if isinstance(current_answer, str): # Radio button returns the selected label string
             try:
                 # 提取 (1) 中的數字，例如 '(1) Option A' -> '1' -> 1 (1-based index)
                 index_str = current_answer.split(')')[0].strip('(')
@@ -149,21 +142,21 @@ def save_current_answer():
                 selected_indices = [index]
             except ValueError:
                 selected_indices = []
-                
+        
     elif q['type'] == 'multi':
-        # 多選：Streamlit Multiselect 回傳選項標籤的列表
-        if isinstance(current_answer, list):
-            # 從標籤列表中解析出 1-based index 列表
-            for label in current_answer:
-                try:
-                    # 提取 (1) 中的數字
-                    index_str = label.split(')')[0].strip('(')
-                    index = int(index_str)
-                    selected_indices.append(index)
-                except ValueError:
-                    continue
-    
+        # 多選：現在使用多個 Checkbox，需要遍歷 session_state
+        num_options = len(q['options'])
+        component_key_prefix = f'q_{q_index}_opt_' # Checkbox key prefix
+        
+        for i in range(num_options):
+            checkbox_key = f'{component_key_prefix}{i}'
+            # Checkbox 的狀態直接儲存在 session_state 中，如果是 True 則表示被選中
+            if st.session_state.get(checkbox_key) is True:
+                # i 是 0-based index, 我們需要 1-based index
+                selected_indices.append(i + 1)
+        
     st.session_state.answers[q_index] = sorted(selected_indices)
+
 
 def navigate_question(direction):
     """處理上一題/下一題的切換"""
@@ -179,7 +172,9 @@ def navigate_question(direction):
         finish_quiz()
         return
 
-    # st.rerun() 已移除。由於此函式是按鈕的 on_click 回呼函式，Streamlit 會自動觸發 rerun。
+    # st.rerun() 
+    # 在按鈕的 on_click 回呼函式中，Streamlit 會自動觸發 rerun。
+
 
 def finish_quiz():
     """計算並顯示結果，準備錯題匯出資料"""
@@ -207,7 +202,7 @@ def finish_quiz():
     st.session_state.percent = percent
     st.session_state.quiz_finished = True
     st.session_state.quiz_started = False
-    st.rerun() # 切換到結果頁面
+    # 由於此函數是由按鈕的回呼函數間接呼叫，Streamlit 會自動 RERUN，故無需手動呼叫 st.rerun()
 
 def reset_quiz():
     """重設測驗狀態"""
@@ -314,26 +309,21 @@ def show_quiz_page():
     # 將選項轉換為帶有 (1), (2) 標記的字串列表
     option_labels = [f"({i+1}) {opt}" for i, opt in enumerate(q['options'])]
     
-    # 預設選中的選項標籤，用於介面初始化
-    default_selection_labels = []
-    if prev_selected_indices:
-        # 將 1-based index 轉換回 option_labels 列表中的元素
-        for idx in prev_selected_indices:
-             # 確保索引在有效範圍內
-             if 0 < idx <= len(option_labels):
-                 default_selection_labels.append(option_labels[idx - 1])
+    # 選項元件 key prefix，用於多選題
+    component_key_prefix = f'q_{q_index}_opt_'
 
-    # 選項元件 key
-    component_key = f'q_answer_{q_index}'
     
     if q['type'] == 'single':
         # 單選題：使用 Radio Button
+        component_key = f'q_answer_{q_index}'
+        
         default_index = -1
-        if default_selection_labels:
+        if prev_selected_indices:
+            # 找到預設選項在 options 列表中的 0-based index
+            # prev_selected_indices 存的是 1-based index，減 1 即可
             try:
-                # 找到預設選項在 options 列表中的 0-based index
-                default_index = option_labels.index(default_selection_labels[0])
-            except ValueError:
+                default_index = prev_selected_indices[0] - 1
+            except IndexError:
                 default_index = -1
         
         # 設置 index=None，讓 Streamlit 在沒有選擇時返回 None
@@ -344,13 +334,18 @@ def show_quiz_page():
             key=component_key
         )
     else:
-        # 多選題：使用 Multiselect
-        st.multiselect(
-            "請選擇所有正確答案：",
-            options=option_labels,
-            default=default_selection_labels,
-            key=component_key
-        )
+        # 多選題：改用 Checkbox 列表
+        st.markdown("請選擇所有正確答案：")
+        
+        for i, label in enumerate(option_labels):
+            # i+1 是 1-based index
+            is_checked = (i + 1) in prev_selected_indices 
+            
+            st.checkbox(
+                label,
+                value=is_checked,
+                key=f'{component_key_prefix}{i}', # 每個 Checkbox 都有獨立 key
+            )
 
     # 導航按鈕
     st.markdown("---")
