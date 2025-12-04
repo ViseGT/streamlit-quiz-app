@@ -168,7 +168,7 @@ def navigate_question(direction):
         finish_quiz()
         return
 
-    st.rerun() # 切換頁面
+    # st.rerun() # 原本的 st.rerun() 已移除。由於此函式是按鈕的 on_click 回呼函式，Streamlit 會自動觸發 rerun，故移除以避免 "no-op" 警告。
 
 def finish_quiz():
     """計算並顯示結果，準備錯題匯出資料"""
