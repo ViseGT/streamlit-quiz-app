@@ -1,9 +1,11 @@
 import streamlit as st
 import json
 import random
-import io
 from datetime import datetime
-import pandas as pd
+import io
+
+# 設定 Streamlit 頁面基礎配置
+st.set_page_config(page_title="跨平台題庫測驗", layout="centered")
 
 # --- 1. 狀態初始化 ---
 # 初始化所有必要的狀態變數，確保程式碼重新運行時資料不會丟失
@@ -15,7 +17,7 @@ def init_session_state():
     if 'current_index' not in st.session_state:
         st.session_state.current_index = 0
     if 'answers' not in st.session_state:
-        st.session_state.answers = {}
+        st.session_state.answers = {} # 儲存 {題號: [答案索引 (1-based)]}
     if 'quiz_started' not in st.session_state:
         st.session_state.quiz_started = False
     if 'quiz_finished' not in st.session_state:
@@ -24,6 +26,9 @@ def init_session_state():
         st.session_state.font_size = 20
     if 'errors' not in st.session_state:
         st.session_state.errors = []
+    # 儲存當前上傳的檔案物件，用於判斷是否需要重新載入
+    if 'uploaded_file_names' not in st.session_state:
+        st.session_state.uploaded_file_names = []
 
 init_session_state()
 
@@ -32,16 +37,22 @@ init_session_state()
 def load_files(uploaded_files):
     """從上傳的檔案中加載所有題目，並更新狀態"""
     all_qs = []
+    current_file_names = []
+
     for file in uploaded_files:
         try:
             # 檔案內容是 bytes，需要解碼
             file_content = file.read().decode('utf-8')
             all_qs.extend(json.loads(file_content))
+            current_file_names.append(file.name)
         except Exception as e:
             st.error(f"檔案 {file.name} 載入失敗或格式錯誤: {e}")
             return
+            
+    # 更新狀態
     st.session_state.all_questions = all_qs
-    st.toast(f"成功載入 {len(all_qs)} 題。")
+    st.session_state.uploaded_file_names = current_file_names
+    st.info(f"成功載入 **{len(all_qs)}** 題。 (來自: {', '.join(current_file_names)})")
 
 def start_quiz(num_single, num_multi):
     """開始測驗，處理抽題和選項亂序邏輯"""
@@ -74,7 +85,7 @@ def start_quiz(num_single, num_multi):
         original_answers = q["answer"]  # 1-based list
 
         # 將原始 options 與 index 綁在一起並打亂
-        option_with_index = list(enumerate(original_options))
+        option_with_index = list(enumerate(original_options)) # 0-based index
         random.shuffle(option_with_index)
 
         # 建立新 options 與新的正解索引（1-based）
@@ -83,8 +94,9 @@ def start_quiz(num_single, num_multi):
 
         for new_index, (old_index, opt_text) in enumerate(option_with_index):
             shuffled_options.append(opt_text)
-            if (old_index + 1) in original_answers:  # 原本正解是第 old_index+1 項
-                new_answer_indices.append(new_index + 1)  # 新的 1-based index
+            # 檢查原始答案是否包含 old_index + 1 (即 1-based index)
+            if (old_index + 1) in original_answers:  
+                new_answer_indices.append(new_index + 1) # 新的 1-based index
 
         q["options"] = shuffled_options
         q["answer"] = sorted(new_answer_indices)
@@ -97,36 +109,57 @@ def start_quiz(num_single, num_multi):
     st.session_state.quiz_finished = False
     st.rerun() # 重新運行以切換到測驗畫面
 
-def save_answer(question_index, selected_options):
-    """儲存當前題目的答案"""
-    # selected_options 來自介面，是 1-based index 列表
-    st.session_state.answers[question_index] = selected_options
+def save_current_answer():
+    """
+    保存當前頁面的答案到 st.session_state.answers 字典中。
+    在導航或結束測驗前調用。
+    Streamlit Radio Button 回傳選項標籤字串，Multiselect 回傳選項標籤字串列表。
+    """
+    q_index = st.session_state.current_index
+    q = st.session_state.questions[q_index]
+    component_key = f'q_answer_{q_index}'
+
+    current_answer = st.session_state.get(component_key)
+    
+    selected_indices = []
+    
+    if current_answer is None or (isinstance(current_answer, list) and not current_answer):
+        # 無選擇答案 (Radio None, Multiselect [])
+        st.session_state.answers[q_index] = selected_indices # 存儲空列表
+        return
+        
+    if q['type'] == 'single':
+        # 單選：Streamlit Radio Button 回傳單個選項標籤 (e.g., '(1) Option A')
+        if isinstance(current_answer, str):
+            try:
+                # 提取 (1) 中的數字，例如 '(1) Option A' -> '1' -> 1 (1-based index)
+                index_str = current_answer.split(')')[0].strip('(')
+                index = int(index_str) 
+                selected_indices = [index]
+            except ValueError:
+                selected_indices = []
+                
+    elif q['type'] == 'multi':
+        # 多選：Streamlit Multiselect 回傳選項標籤的列表
+        if isinstance(current_answer, list):
+            # 從標籤列表中解析出 1-based index 列表
+            for label in current_answer:
+                try:
+                    # 提取 (1) 中的數字
+                    index_str = label.split(')')[0].strip('(')
+                    index = int(index_str)
+                    selected_indices.append(index)
+                except ValueError:
+                    continue
+    
+    st.session_state.answers[q_index] = sorted(selected_indices)
 
 def navigate_question(direction):
     """處理上一題/下一題的切換"""
-    q = st.session_state.questions[st.session_state.current_index]
-    
-    # 儲存當前答案 (這裡我們假設選項組件已經更新了 session state)
-    # Streamlit 會自動處理按鈕觸發前的所有輸入框/選項狀態
-    
-    # 手動保存當前選項的邏輯（如果使用 checkbox / radio groups，不需要手動讀取 var_list）
-    # 因為我們將選項的 state key 設為 'q_answer_X'，所以 Streamlit 已經在記憶中。
+    # 1. 儲存當前答案
+    save_current_answer()
 
-    # 必須手動保存當前題目的答案 (這步是將當前頁面的答案存入 answers 字典)
-    # 答案會從 show_question 裡的 component 拿到
-    current_answer_key = f'q_answer_{st.session_state.current_index}'
-    if current_answer_key in st.session_state:
-        # Streamlit Radio button 回傳單個值 (single)，Checkbox group 回傳列表 (multi)
-        current_answer = st.session_state[current_answer_key]
-        if q['type'] == 'single' and current_answer:
-            # 單選：確保是列表 [1, 2, 3...]
-            st.session_state.answers[st.session_state.current_index] = [current_answer]
-        elif q['type'] == 'multi' and current_answer:
-            # 多選：確保是列表 [1, 2, 3...]
-            st.session_state.answers[st.session_state.current_index] = [int(a.split(')')[0]) for a in current_answer]
-        else:
-             st.session_state.answers[st.session_state.current_index] = [] # 未選
-
+    # 2. 導航
     if direction == "prev" and st.session_state.current_index > 0:
         st.session_state.current_index -= 1
     elif direction == "next" and st.session_state.current_index < len(st.session_state.questions) - 1:
@@ -139,28 +172,17 @@ def navigate_question(direction):
 
 def finish_quiz():
     """計算並顯示結果，準備錯題匯出資料"""
+    # 確保最後一題的答案被保存
+    save_current_answer()
+    
     score = 0
     total = len(st.session_state.questions)
     st.session_state.errors = []
     
-    # 確保最後一題的答案被保存
-    current_answer_key = f'q_answer_{st.session_state.current_index}'
-    q = st.session_state.questions[st.session_state.current_index]
-    if current_answer_key in st.session_state:
-        current_answer = st.session_state[current_answer_key]
-        if q['type'] == 'single' and current_answer:
-            st.session_state.answers[st.session_state.current_index] = [current_answer]
-        elif q['type'] == 'multi' and current_answer:
-            st.session_state.answers[st.session_state.current_index] = [int(a.split(')')[0]) for a in current_answer]
-        else:
-             st.session_state.answers[st.session_state.current_index] = []
-
     for i, q in enumerate(st.session_state.questions):
-        correct = sorted(q['answer'])
-        selected = sorted(st.session_state.answers.get(i, []))
-        
-        # Streamlit 的選項回傳是字串，需要轉換回 1-based 索引進行比較
-        
+        correct = sorted(q['answer']) # 1-based index
+        selected = st.session_state.answers.get(i, []) # 1-based index
+
         if correct == selected:
             score += 1
         else:
@@ -183,6 +205,10 @@ def reset_quiz():
     st.session_state.answers = {}
     st.session_state.quiz_started = False
     st.session_state.quiz_finished = False
+    st.session_state.all_questions = []
+    # 重設 uploader widget，讓用戶可以重新上傳
+    st.session_state.uploader = []
+    st.session_state.uploaded_file_names = []
     st.rerun()
     
 # --- 3. 網頁介面顯示函數 ---
@@ -191,18 +217,24 @@ def show_settings_page():
     """顯示設定和檔案上傳介面"""
     st.header("⚙️ 測驗系統設置與題庫加載")
 
-    # 檔案上傳 (取代 filedialog)
+    # 檔案上傳
     st.markdown("---")
     uploaded_files = st.file_uploader(
         "請選擇題庫 JSON 檔案 (可複選，需符合原格式)",
         type="json",
         accept_multiple_files=True,
-        on_change=lambda: load_files(st.session_state['uploader']) # 使用 on_change 確保狀態更新
-        ,key='uploader'
+        key='uploader'
     )
     
+    # 處理檔案上傳的優化邏輯：檢查當前上傳的檔案數量或名稱是否與已載入的匹配，若否則重新載入
+    current_names = [f.name for f in uploaded_files] if uploaded_files else []
+    
+    if uploaded_files and (current_names != st.session_state.uploaded_file_names or len(st.session_state.all_questions) == 0):
+        # 僅在檔案名稱列表不匹配或題庫為空時才觸發 load_files
+        load_files(uploaded_files)
+
     if st.session_state.all_questions:
-        st.info(f"當前已載入 **{len(st.session_state.all_questions)}** 題。")
+        st.success(f"當前已載入 **{len(st.session_state.all_questions)}** 題。")
     
     # 題數設定
     st.subheader("抽題設定")
@@ -220,15 +252,17 @@ def show_settings_page():
     new_font_size = st.slider("字體大小 (用於選項及題目)", min_value=12, max_value=30, value=st.session_state.font_size, step=1, key='font_slider')
     st.session_state.font_size = new_font_size
     
-    # 由於 Streamlit 無法像 Tkinter 那樣直接控制所有元件字體，我們用 CSS 注入
+    # 由於 Streamlit 無法直接控制所有元件字體，我們用 CSS 注入
     st.markdown(
         f"""
         <style>
-        .stButton>button, .stTextInput>div>div>input, .stSelectbox>div, .stRadio>div, .stCheckbox>label {{
+        /* 應用於按鈕、輸入框、選項文字等 */
+        .stButton>button, .stTextInput>div>div>input, .stSelectbox>div, .stRadio>div, .stCheckbox>label, .stMultiSelect>div {{
             font-size: {st.session_state.font_size}px;
         }}
-        .stMarkdown h3, .stMarkdown h2 {{
-            font-size: {st.session_state.font_size + 4}px;
+        /* 應用於題目等標題 */
+        .stMarkdown h3, .stMarkdown h2, .stMarkdown p, .stMarkdown strong {{
+            font-size: {st.session_state.font_size + 2}px;
         }}
         </style>
         """,
@@ -260,45 +294,43 @@ def show_quiz_page():
     # 將選項轉換為帶有 (1), (2) 標記的字串列表
     option_labels = [f"({i+1}) {opt}" for i, opt in enumerate(q['options'])]
     
-    # 預設選中的選項，用於介面初始化
-    default_selection = []
+    # 預設選中的選項標籤，用於介面初始化
+    default_selection_labels = []
     if prev_selected_indices:
         # 將 1-based index 轉換回 option_labels 列表中的元素
-        default_selection = [option_labels[idx-1] for idx in prev_selected_indices if 0 < idx <= len(option_labels)]
+        for idx in prev_selected_indices:
+             # 確保索引在有效範圍內
+             if 0 < idx <= len(option_labels):
+                 default_selection_labels.append(option_labels[idx - 1])
 
-    # 選項元件
-    # 每個選項組件都使用唯一的 key，並將答案直接儲存到 session state 中
+    # 選項元件 key
     component_key = f'q_answer_{q_index}'
     
     if q['type'] == 'single':
-        # 單選題：使用 Radio Button，回傳單個選項文字
-        # 這裡的 default value 必須是 option_labels 中的一個元素，如果沒有選擇，則為 None
-        selected_label = st.radio(
+        # 單選題：使用 Radio Button
+        default_index = -1
+        if default_selection_labels:
+            try:
+                # 找到預設選項在 options 列表中的 0-based index
+                default_index = option_labels.index(default_selection_labels[0])
+            except ValueError:
+                default_index = -1
+        
+        # 設置 index=None，讓 Streamlit 在沒有選擇時返回 None
+        st.radio(
             "請選擇一個答案：",
             options=option_labels,
-            index=option_labels.index(default_selection[0]) if default_selection else None,
+            index=default_index if default_index >= 0 else None,
             key=component_key
         )
-        # 由於 Radio button 返回的是 label 字串，我們需要將它轉換為 1-based index
-        if selected_label:
-            selected_index = int(selected_label.split(')')[0])
-            st.session_state.answers[q_index] = [selected_index]
-
     else:
-        # 多選題：使用 Checkbox Group，回傳選中選項文字的列表
-        # Streamlit 的 multiselect 適合多選，但 Checkbox Group 視覺上更像原本的 App
-        selected_labels = st.multiselect(
+        # 多選題：使用 Multiselect
+        st.multiselect(
             "請選擇所有正確答案：",
             options=option_labels,
-            default=default_selection,
+            default=default_selection_labels,
             key=component_key
         )
-        # 將選中的 label 字串列表轉換為 1-based index 列表
-        if selected_labels:
-            selected_indices = [int(label.split(')')[0]) for label in selected_labels]
-            st.session_state.answers[q_index] = selected_indices
-        else:
-            st.session_state.answers[q_index] = []
 
     # 導航按鈕
     st.markdown("---")
@@ -307,6 +339,7 @@ def show_quiz_page():
     # 上一題
     with col_nav[0]:
         if st.session_state.current_index > 0:
+            # 使用 on_click 確保點擊時觸發 navigate_question
             st.button("⬅️ 上一題", on_click=navigate_question, args=("prev",), use_container_width=True)
         else:
             st.button("🚫 上一題 (首頁)", disabled=True, use_container_width=True)
@@ -321,15 +354,14 @@ def show_quiz_page():
             st.button("下一題 ➡️", on_click=navigate_question, args=("next",), type="secondary", use_container_width=True)
         else:
             st.button("✅ 完成測驗", on_click=navigate_question, args=("finish",), type="primary", use_container_width=True)
-            
-    # 顯示目前已選答案（方便調試）
-    # st.sidebar.write("當前答案:", st.session_state.answers.get(q_index, []))
 
 
 def show_result_page():
     """顯示測驗結果並提供錯題下載"""
     
-    st.balloons()
+    if st.session_state.percent >= 80:
+        st.balloons()
+        
     st.header("🎉 測驗完成！")
     
     # 總分卡片
@@ -344,13 +376,33 @@ def show_result_page():
         st.warning(f"您答錯了 {len(st.session_state.errors)} 題，請下載錯題檔案進行複習。")
 
         # 準備錯題 JSON 數據
+        # 為了匯出方便，將答案從 1-based index 轉回選項文字
+        errors_for_export = []
+        for err in st.session_state.errors:
+            export_q = err.copy()
+            # 將 selected 1-based index 轉換為選項文字列表
+            selected_labels = [export_q['options'][idx - 1] for idx in export_q.get('selected', []) if idx > 0 and idx <= len(export_q['options'])]
+            
+            # 將正確答案 1-based index 轉換為選項文字列表
+            correct_labels = [export_q['options'][idx - 1] for idx in export_q.get('answer', []) if idx > 0 and idx <= len(export_q['options'])]
+            
+            export_q['您的選擇'] = selected_labels
+            export_q['正確答案'] = correct_labels
+            # 移除用於計算的數字 index
+            del export_q['answer']
+            if 'selected' in export_q:
+                del export_q['selected']
+            
+            errors_for_export.append(export_q)
+
+
         errors_json = json.dumps(
-            st.session_state.errors,
+            errors_for_export,
             ensure_ascii=False,
             indent=2
         ).encode('utf-8')
         
-        # 錯題下載 (取代 filedialog.askdirectory)
+        # 錯題下載
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"錯題報告_{timestamp}.json"
         
@@ -363,10 +415,17 @@ def show_result_page():
             use_container_width=True
         )
         
-        # 顯示錯題概覽 (可選)
-        with st.expander("查看所有錯題的題目名稱"):
-            for i, error_q in enumerate(st.session_state.errors):
-                st.markdown(f"**{i+1}.** {error_q.get('question')[:50]}...")
+        # 顯示錯題概覽
+        with st.expander("📝 展開查看所有錯題的詳細報告"):
+            for i, error_q in enumerate(errors_for_export):
+                # 重新組合選項為 (1) Option A, (2) Option B...
+                options_str = "\n".join([f"({j+1}) {opt}" for j, opt in enumerate(error_q.get('options', []))])
+                
+                st.markdown(f"#### 錯誤題目 {i+1}. {error_q.get('question')}")
+                st.markdown(f"**所有選項:**\n{options_str}")
+                st.markdown(f"**您的答案:** {', '.join(error_q.get('您的選擇', ['無']))}")
+                st.markdown(f"**正確答案:** {', '.join(error_q.get('正確答案', ['無']))}")
+                st.markdown("---")
             
     else:
         st.success("恭喜您！所有題目都答對了！")
@@ -378,6 +437,7 @@ def show_result_page():
 # --- 4. 主程式流程控制 ---
 
 st.title("📱 跨平台題庫測驗系統 (Web App)")
+st.caption("適用於電腦、Android 及 iOS (可加入主畫面)")
 
 if st.session_state.quiz_started:
     show_quiz_page()
@@ -393,8 +453,8 @@ if not st.session_state.quiz_started and not st.session_state.quiz_finished:
     st.sidebar.markdown(
         """
         1.  點擊 **「選擇檔案」** 上傳您的題庫 JSON 檔。
-        2.  設定單選和多選的抽題數量。
+        2.  設定抽題數量與字體大小。
         3.  點擊 **「開始測驗」**。
-        4.  在您的 **iOS 裝置上**，打開這個網頁，並使用 Safari 的 **「加入主畫面」** 功能，即可像 App 一樣運行。
+        4.  在您的 **iOS 裝置上**，使用 Safari 開啟此網頁並 **「加入主畫面」**，即可獲得 App 體驗。
         """
     )
