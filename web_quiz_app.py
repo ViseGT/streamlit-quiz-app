@@ -52,7 +52,19 @@ def load_files(uploaded_files):
     # 更新狀態
     st.session_state.all_questions = all_qs
     st.session_state.uploaded_file_names = current_file_names
-    st.info(f"成功載入 **{len(all_qs)}** 題。 (來自: {', '.join(current_file_names)})")
+    
+    # --- 新增邏輯：計算單選和多選數量並顯示 ---
+    single_count = sum(1 for q in all_qs if q.get('type') == 'single')
+    multi_count = sum(1 for q in all_qs if q.get('type') == 'multi')
+    total_count = len(all_qs)
+
+    st.info(
+        f"成功載入 **{total_count}** 題。\n\n"
+        f"- 單選題 (Single-Choice): **{single_count}** 題\n"
+        f"- 多選題 (Multi-Choice): **{multi_count}** 題\n\n"
+        f"(來自: {', '.join(current_file_names)})"
+    )
+    # --- 邏輯結束 ---
 
 def start_quiz(num_single, num_multi):
     """開始測驗，處理抽題和選項亂序邏輯"""
@@ -113,7 +125,6 @@ def save_current_answer():
     """
     保存當前頁面的答案到 st.session_state.answers 字典中。
     在導航或結束測驗前調用。
-    Streamlit Radio Button 回傳選項標籤字串，Multiselect 回傳選項標籤字串列表。
     """
     q_index = st.session_state.current_index
     q = st.session_state.questions[q_index]
@@ -168,7 +179,7 @@ def navigate_question(direction):
         finish_quiz()
         return
 
-    # st.rerun() # 原本的 st.rerun() 已移除。由於此函式是按鈕的 on_click 回呼函式，Streamlit 會自動觸發 rerun，故移除以避免 "no-op" 警告。
+    # st.rerun() 已移除。由於此函式是按鈕的 on_click 回呼函式，Streamlit 會自動觸發 rerun。
 
 def finish_quiz():
     """計算並顯示結果，準備錯題匯出資料"""
@@ -233,8 +244,17 @@ def show_settings_page():
         # 僅在檔案名稱列表不匹配或題庫為空時才觸發 load_files
         load_files(uploaded_files)
 
+    # 顯示題庫分佈資訊
     if st.session_state.all_questions:
-        st.success(f"當前已載入 **{len(st.session_state.all_questions)}** 題。")
+        all_qs = st.session_state.all_questions
+        single_count = sum(1 for q in all_qs if q.get('type') == 'single')
+        multi_count = sum(1 for q in all_qs if q.get('type') == 'multi')
+        total_count = len(all_qs)
+        
+        st.success(
+            f"當前已載入 **{total_count}** 題。\n"
+            f"單選題: **{single_count}** 題, 多選題: **{multi_count}** 題"
+        )
     
     # 題數設定
     st.subheader("抽題設定")
