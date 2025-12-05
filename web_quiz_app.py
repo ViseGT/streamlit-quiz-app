@@ -29,6 +29,10 @@ def init_session_state():
     # 儲存當前上傳的檔案物件，用於判斷是否需要重新載入
     if 'uploaded_file_names' not in st.session_state:
         st.session_state.uploaded_file_names = []
+    
+    # [新增] 用於強制重設 file_uploader 的動態 key
+    if 'uploader_key' not in st.session_state:
+        st.session_state.uploader_key = 0
 
 init_session_state()
 
@@ -212,8 +216,11 @@ def reset_quiz():
     st.session_state.quiz_started = False
     st.session_state.quiz_finished = False
     st.session_state.all_questions = []
-    # 重設 uploader widget，讓用戶可以重新上傳
-    st.session_state.uploader = []
+    
+    # [修正] 移除原本導致錯誤的 st.session_state.uploader = [] 
+    # [修正] 改為透過增加 key 的後綴數字，來強制 Streamlit 重設 uploader 元件
+    st.session_state.uploader_key += 1
+    
     st.session_state.uploaded_file_names = []
     st.rerun()
     
@@ -225,11 +232,15 @@ def show_settings_page():
 
     # 檔案上傳
     st.markdown("---")
+    
+    # [修正] 使用動態 Key，當 reset_quiz 改變 uploader_key 時，這裡會視為新元件而清空內容
+    dynamic_key = f"uploader_{st.session_state.uploader_key}"
+    
     uploaded_files = st.file_uploader(
         "請選擇題庫 JSON 檔案 (可複選，需符合原格式)",
         type="json",
         accept_multiple_files=True,
-        key='uploader'
+        key=dynamic_key 
     )
     
     # 處理檔案上傳的優化邏輯：檢查當前上傳的檔案數量或名稱是否與已載入的匹配，若否則重新載入
